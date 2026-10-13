@@ -1,0 +1,34 @@
+diff --git a/librecomp/include/librecomp/addresses.hpp b/librecomp/include/librecomp/addresses.hpp
+index b1b50cb..dc291ff 100644
+--- a/librecomp/include/librecomp/addresses.hpp
++++ b/librecomp/include/librecomp/addresses.hpp
+@@ -9,7 +9,13 @@ namespace recomp {
+     // 512GB (kseg0 size)
+     constexpr size_t mem_size = 512ULL * 1024ULL * 1024ULL;
+     // 4GB (the full address space)
++#ifdef RECOMP_IOS
++    // Keep the valid 512 MiB address range and a guard region without reserving
++    // the full 32-bit space on devices with a limited virtual address budget.
++    constexpr size_t allocation_size = 1024ULL * 1024ULL * 1024ULL;
++#else
+     constexpr size_t allocation_size = 4096ULL * 1024ULL * 1024ULL;
++#endif
+     // We need a place in rdram to hold the PI handles, so pick an address in extended rdram
+     constexpr int32_t cart_handle = 0x80800000;
+     constexpr int32_t drive_handle = (int32_t)(cart_handle + sizeof(OSPiHandle));
+diff --git a/librecomp/src/recomp.cpp b/librecomp/src/recomp.cpp
+index ea17675..8d363fc 100644
+--- a/librecomp/src/recomp.cpp
++++ b/librecomp/src/recomp.cpp
+@@ -96,6 +96,11 @@ void recomp::mods::register_embedded_mod(const std::string &mod_id, std::span<co
+ }
+ 
+ void recomp::mods::scan_mods() {
++#ifdef RECOMP_IOS
++    // The game and built-in patches are ahead-of-time compiled. Runtime code
++    // mods require JIT/code-page writes that ordinary signed iOS apps lack.
++    return;
++#endif
+     std::vector<recomp::mods::ModOpenErrorDetails> mod_open_errors;
+     {
+         std::lock_guard mod_lock{ mod_context_mutex };

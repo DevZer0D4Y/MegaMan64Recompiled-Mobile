@@ -1,0 +1,112 @@
+diff --git a/librecomp/src/recomp.cpp b/librecomp/src/recomp.cpp
+--- a/librecomp/src/recomp.cpp
++++ b/librecomp/src/recomp.cpp
+@@ -155,31 +155,48 @@
+ }
+ 
+ static std::vector<uint8_t> read_file(const std::filesystem::path& path) {
++    // Only ROMs use this reader. Reject directories and failed size queries
++    // before converting tellg() to an allocation size (failure returns -1).
++    constexpr std::streamoff max_rom_size = 64 * 1024 * 1024;
++    std::error_code error;
++    if (!std::filesystem::is_regular_file(path, error) || error) {
++        return {};
++    }
++    std::ifstream file{path, std::ios::binary | std::ios::ate};
++    if (!file) {
++        return {};
++    }
++    const std::streamoff size = file.tellg();
++    if (size <= 0 || size > max_rom_size) {
++        return {};
++    }
+     std::vector<uint8_t> ret;
+-
+-    std::ifstream file{ path, std::ios::binary};
+-
+-    if (file.good()) {
+-        file.seekg(0, std::ios::end);
+-        ret.resize(file.tellg());
+-        file.seekg(0, std::ios::beg);
+-
+-        file.read(reinterpret_cast<char*>(ret.data()), ret.size());
+-    }
+-
++    try {
++        ret.resize(static_cast<size_t>(size));
++    }
++    catch (const std::bad_alloc&) {
++        return {};
++    }
++    file.seekg(0, std::ios::beg);
++    if (!file.read(reinterpret_cast<char*>(ret.data()), static_cast<std::streamsize>(size))) {
++        return {};
++    }
+     return ret;
+ }
+ 
+ bool write_file(const std::filesystem::path& path, const std::vector<uint8_t>& data) {
+-    std::ofstream out_file{ path, std::ios::binary };
+-
+-    if (!out_file.good()) {
++    std::error_code error;
++    std::filesystem::create_directories(path.parent_path(), error);
++    if (error) {
+         return false;
+     }
+-
++    std::ofstream out_file{path, std::ios::binary};
++    if (!out_file) {
++        return false;
++    }
+     out_file.write(reinterpret_cast<const char*>(data.data()), data.size());
+-
+-    return true;
++    out_file.close();
++    return !out_file.fail();
+ }
+ 
+ bool check_stored_rom(const recomp::GameEntry& game_entry) {
+@@ -187,7 +204,8 @@
+ 
+     if (!check_hash(stored_rom_data, game_entry.rom_hash)) {
+         // Incorrect hash, remove the stored ROM file if it exists.
+-        std::filesystem::remove(config_path / game_entry.stored_filename());
++        std::error_code error;
++        std::filesystem::remove(config_path / game_entry.stored_filename(), error);
+         return false;
+     }
+ 
+@@ -219,7 +237,8 @@
+ 
+     if (!check_hash(stored_rom_data, find_it->second.rom_hash)) {
+         // The ROM no longer has the right hash, delete it.
+-        std::filesystem::remove(config_path / find_it->second.stored_filename());
++        std::error_code error;
++        std::filesystem::remove(config_path / find_it->second.stored_filename(), error);
+         return false;
+     }
+ 
+@@ -358,6 +377,11 @@
+ 
+     if (rom_data.empty()) {
+         return recomp::RomValidationError::FailedToOpen;
++    }
++
++    // Header fields below include the internal title at offset 0x20.
++    if (rom_data.size() < 0x40) {
++        return recomp::RomValidationError::NotARom;
+     }
+ 
+     // Pad the rom to the nearest multiple of 4 bytes.
+@@ -393,7 +417,9 @@
+         }
+     }
+ 
+-    write_file(config_path / game_entry.stored_filename(), rom_data);
++    if (!write_file(config_path / game_entry.stored_filename(), rom_data)) {
++        return recomp::RomValidationError::OtherError;
++    }
+     
+     return recomp::RomValidationError::Good;
+ }

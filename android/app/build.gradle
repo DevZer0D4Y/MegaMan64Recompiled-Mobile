@@ -1,0 +1,53 @@
+plugins { id 'com.android.application' }
+def prebuiltNative = providers.gradleProperty('prebuiltNative')
+if (providers.gradleProperty('androidBuildDir').isPresent()) {
+    layout.buildDirectory.set(file(providers.gradleProperty('androidBuildDir').get()))
+}
+
+
+android {
+    namespace 'com.devz.megaman64'
+    compileSdk 35
+    ndkVersion '27.2.12479018'
+    if (providers.gradleProperty('ndkPath').isPresent()) {
+        ndkPath providers.gradleProperty('ndkPath').get()
+    }
+    defaultConfig {
+        applicationId 'com.devz.megaman64'
+        minSdk 26
+        targetSdk 35
+        versionCode 2
+        versionName '0.9.1-mobile.1'
+        ndk { abiFilters 'arm64-v8a' }
+        if (!prebuiltNative.isPresent()) { externalNativeBuild {
+            cmake {
+                arguments '-DCMAKE_POLICY_VERSION_MINIMUM=3.5', '-DANDROID_STL=c++_shared',
+                    '-DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON',
+                    "-DRECOMP_HOST_DXC=${providers.gradleProperty('hostDxc').getOrElse('')}",
+                    "-DRECOMP_HOST_FILE_TO_C=${providers.gradleProperty('hostFileToC').getOrElse('')}"
+                targets 'MegaMan64Recompiled', 'SDL2'
+            }
+        }
+    }
+    }
+    if (!prebuiltNative.isPresent()) {
+        externalNativeBuild { cmake { path '../../CMakeLists.txt'; version providers.gradleProperty('cmakeVersion').getOrElse('3.22.1') } }
+    } else {
+        sourceSets.main.jniLibs.srcDirs = [prebuiltNative.get()]
+    }
+    sourceSets {
+        main {
+            java.srcDirs += '../deps/SDL/android-project/app/src/main/java'
+        }
+    }
+    // The native game reads assets/<name>. Preserve that layout inside the APK.
+    sourceSets.main.assets.srcDirs = [layout.buildDirectory.dir('generated/gameAssets')]
+    buildTypes { release { minifyEnabled false } }
+}
+
+tasks.register('stageGameAssets', Sync) {
+    from('../../assets') { into 'assets'; exclude 'scss/**' }
+    from('../../recompcontrollerdb.txt')
+    into layout.buildDirectory.dir('generated/gameAssets')
+}
+tasks.named('preBuild').configure { dependsOn 'stageGameAssets' }

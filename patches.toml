@@ -1,0 +1,25 @@
+# Config file for recompiling patches for Mega Man 64 USA recompilation.
+
+[input]
+# Paths are relative to the location of this config file.
+elf_path = "patches/patches.elf"
+rom_file_path = "MegaMan64.us.rev1.z64"
+output_func_path = "RecompiledPatches"
+single_file_output = true
+
+# Allow absolute symbols to be used as jump targets.
+use_absolute_symbols = true
+
+# Point the recompiler at the symbol files so that it can resolve relocations during recompilation.
+func_reference_syms_file = "MegaMan64RecompSyms/megaman64.us.rev1.syms.toml"
+data_reference_syms_files = [ "MegaMan64RecompSyms/megaman64.us.rev1.datasyms.toml" ]
+
+# Tell the recompiler to write the output binary. Doing this instead of using objcopy allows the recompiler to patch MIPS32 relocs.
+output_binary_path = "patches/patches.bin"
+
+allow_exports = true
+
+# Do not emit warnings for unpaired LO16 values, as clang produces many of them.
+unpaired_lo16_warnings = false
+
+strict_patch_mode = true

@@ -1,0 +1,6 @@
+if(NOT TARGET SDL2::SDL2)
+    message(FATAL_ERROR "Android SDL2 must be built from android/deps/SDL")
+endif()
+set(SDL2_FOUND TRUE)
+set(SDL2_INCLUDE_DIRS "${CMAKE_SOURCE_DIR}/android/deps/SDL/include")
+set(SDL2_LIBRARIES SDL2::SDL2)

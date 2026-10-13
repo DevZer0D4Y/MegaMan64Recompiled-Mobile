@@ -1,0 +1,308 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 0789c20..5085196 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -61,7 +61,7 @@ if(APPLE)
+     list(APPEND PLUME_SOURCES
+         plume_metal.cpp
+         plume_metal.h
+-        plume_apple.mm
++        $<IF:$<BOOL:${RECOMP_IOS}>,${CMAKE_SOURCE_DIR}/src/main/plume_ios.mm,${CMAKE_CURRENT_SOURCE_DIR}/plume_apple.mm>
+         plume_apple.h
+     )
+ elseif(WIN32)
+@@ -89,6 +89,11 @@ if(WIN32)
+     )
+ endif()
+ 
++if(ANDROID)
++    # Track SDL's replacement ANativeWindow during surface recreation.
++    target_link_libraries(plume PUBLIC SDL2::SDL2)
++endif()
++
+ if(PLUME_SDL_VULKAN_ENABLED)
+     target_compile_definitions(plume PUBLIC PLUME_SDL_VULKAN_ENABLED)
+     target_include_directories(plume PUBLIC ${SDL2_INCLUDE_DIRS})
+diff --git a/plume_metal.cpp b/plume_metal.cpp
+index a5f30a3..3bfbf7b 100644
+--- a/plume_metal.cpp
++++ b/plume_metal.cpp
+@@ -1322,8 +1322,20 @@ namespace plume {
+         this->functionName = (entryPointName != nullptr) ? NS::String::string(entryPointName, NS::UTF8StringEncoding) : MTLSTR("");
+ 
+         NS::Error *error = nullptr;
+-        const dispatch_data_t dispatchData = dispatch_data_create(data, size, dispatch_get_main_queue(), ^{});
+-        library = device->mtl->newLibrary(dispatchData, &error);
++#if PLUME_IOS
++        if (size >= 4 && memcmp(data, "MTLB", 4) != 0) {
++            // Optional development packages embed MSL when the host Metal
++            // toolchain is unavailable. Use Metal's supported source compiler.
++            const std::string source(static_cast<const char*>(data), static_cast<size_t>(size));
++            library = device->mtl->newLibrary(NS::String::string(source.c_str(), NS::UTF8StringEncoding), nullptr, &error);
++        }
++        else
++#endif
++        {
++            const dispatch_data_t dispatchData = dispatch_data_create(data, size, dispatch_get_main_queue(), ^{});
++            library = device->mtl->newLibrary(dispatchData, &error);
++            dispatch_release(dispatchData);
++        }
+ 
+         if (error != nullptr) {
+             fprintf(stderr, "MTLDevice newLibraryWithSource: failed with error %s.\n", error->localizedDescription()->utf8String());
+@@ -1988,22 +2000,30 @@ namespace plume {
+     }
+ 
+     bool MetalSwapChain::resize() {
+-        getWindowSize(width, height);
++        uint32_t newWidth, newHeight;
++        getWindowSize(newWidth, newHeight);
+ 
+-        if (width == 0 || height == 0) {
++        if (newWidth == 0 || newHeight == 0) {
+             return false;
+         }
+ 
++        width = newWidth;
++        height = newHeight;
+         const CGSize drawableSize = CGSizeMake(width, height);
+         if (const CGSize current = layer->drawableSize(); !CGSizeEqualToSize(current, drawableSize)) {
+             layer->setDrawableSize(drawableSize);
++        }
+ 
+-            for (uint32_t i = 0; i < MAX_DRAWABLES; i++) {
+-                MetalDrawable &drawable = drawables[i];
+-                drawable.desc.width = width;
+-                drawable.desc.height = height;
+-            }
++        // UIKit may have already resized the layer. Framebuffers are rebuilt
++        // from these descriptors, so update them even when the layer matches.
++        for (uint32_t i = 0; i < MAX_DRAWABLES; i++) {
++            MetalDrawable &drawable = drawables[i];
++            drawable.desc.width = width;
++            drawable.desc.height = height;
+         }
++#if PLUME_IOS
++        fprintf(stderr, "Metal: framebuffer resized to %u x %u\n", width, height);
++#endif
+ 
+         return true;
+     }
+@@ -2050,7 +2070,16 @@ namespace plume {
+         acquireBuffer->encodeSignalEvent(interfaceSemaphore->mtl, interfaceSemaphore->mtlEventValue);
+         acquireBuffer->commit();
+ 
++#if PLUME_IOS
++        static bool firstAcquire = true;
++        const bool traceAcquire = firstAcquire;
++        firstAcquire = false;
++        if (traceAcquire) fprintf(stderr, "Metal: acquiring first drawable\n");
++#endif
+         CA::MetalDrawable *nextDrawable = layer->nextDrawable();
++#if PLUME_IOS
++        if (traceAcquire) fprintf(stderr, "Metal: first drawable %s\n", nextDrawable ? "ready" : "unavailable");
++#endif
+         if (nextDrawable == nullptr) {
+             fprintf(stderr, "No more drawables available for rendering.\n");
+             return false;
+@@ -2092,10 +2121,18 @@ namespace plume {
+     }
+ 
+     void MetalSwapChain::getWindowSize(uint32_t &dstWidth, uint32_t &dstHeight) const {
++#if PLUME_IOS
++        // SDL/UIKit owns the layer size and updates it during layout. A cached
++        // UIWindow size may be stale during screenshots, rotation or resume.
++        const CGSize size = layer->drawableSize();
++        dstWidth = static_cast<uint32_t>(std::max(size.width, CGFloat(0)));
++        dstHeight = static_cast<uint32_t>(std::max(size.height, CGFloat(0)));
++#else
+         CocoaWindowAttributes attributes;
+         windowWrapper->getWindowAttributes(&attributes);
+         dstWidth = attributes.width;
+         dstHeight = attributes.height;
++#endif
+     }
+ 
+     // MetalAttachment
+@@ -3792,7 +3829,13 @@ namespace plume {
+         mtl = preferredDevice ? preferredDevice : MTL::CreateSystemDefaultDevice();;
+         const std::string deviceName(mtl->name()->utf8String());
+         description.name = deviceName;
++#if PLUME_IOS
++        // iPhone/iPad GPUs are integrated. MTLDevice.location is a macOS
++        // property; metal-cpp exposes it without an iOS availability check.
++        description.type = RenderDeviceType::INTEGRATED;
++#else
+         description.type = mapDeviceType(mtl->location());
++#endif
+         description.driverVersion = 1; // Unavailable
+         description.vendor = mtl->supportsFamily(MTL::GPUFamilyApple1) ? RenderDeviceVendor::APPLE : getRenderDeviceVendor(mtl->registryID());
+         description.dedicatedVideoMemory = mtl->recommendedMaxWorkingSetSize();
+diff --git a/plume_vulkan.cpp b/plume_vulkan.cpp
+index 2800022..1890353 100644
+--- a/plume_vulkan.cpp
++++ b/plume_vulkan.cpp
+@@ -14,6 +14,10 @@
+ #include <cmath>
+ #include <climits>
+ #include <unordered_map>
++#if defined(__ANDROID__)
++#include <SDL.h>
++#include <SDL_syswm.h>
++#endif
+ 
+ #if DLSS_ENABLED
+ #   include "render/plume_dlss.h"
+@@ -1899,7 +1903,14 @@ namespace plume {
+             boundlessRangeSize = std::max(desc.boundlessRangeSize, 1U);
+ 
+             const RenderDescriptorRange &lastDescriptorRange = desc.descriptorRanges[desc.descriptorRangesCount - 1];
+-            typeCounts[toVk(lastDescriptorRange.type)] += boundlessRangeSize;
++            uint32_t poolRangeSize = boundlessRangeSize;
++#ifdef __ANDROID__
++            // Reserve the layout's full variable-binding capacity on Android.
++            // Some drivers account for the layout maximum during allocation,
++            // even when countInfo requests a smaller active descriptor count.
++            poolRangeSize = std::max(poolRangeSize, lastDescriptorRange.count);
++#endif
++            typeCounts[toVk(lastDescriptorRange.type)] += poolRangeSize;
+             rangeCount--;
+         }
+ 
+@@ -1931,7 +1942,11 @@ namespace plume {
+ 
+         VkResult res = vkAllocateDescriptorSets(device->vk, &allocateInfo, &vk);
+         if (res != VK_SUCCESS) {
+-            fprintf(stderr, "vkAllocateDescriptorSets failed with error code 0x%X.\n", res);
++            fprintf(stderr, "vkAllocateDescriptorSets failed with error code 0x%X (ranges=%u, variable=%d, active=%u).\n",
++                res, desc.descriptorRangesCount, desc.lastRangeIsBoundless, boundlessRangeSize);
++            for (const auto &entry : typeCounts) {
++                fprintf(stderr, "Vulkan: descriptor pool type %d capacity %u\n", int(entry.first), entry.second);
++            }
+             return;
+         }
+     }
+@@ -2071,6 +2086,15 @@ namespace plume {
+         }
+     }
+ 
++#if defined(__ANDROID__)
++    static ANativeWindow* currentAndroidWindow() {
++        SDL_Window* window = SDL_GetWindowFromID(1);
++        SDL_SysWMinfo info{};
++        SDL_VERSION(&info.version);
++        return window && SDL_GetWindowWMInfo(window, &info) ? info.info.android.window : nullptr;
++    }
++#endif
++
+     // VulkanSwapChain
+ 
+     VulkanSwapChain::VulkanSwapChain(VulkanCommandQueue *commandQueue, const RenderSwapChainDesc &desc) {
+@@ -2197,6 +2221,12 @@ namespace plume {
+         // Check if the format we requested is part of the supported surface formats.
+         std::vector<VkSurfaceFormatKHR> compatibleSurfaceFormats;
+         VkFormat requestedFormat = toVk(desc.format);
++#ifdef __ANDROID__
++        fprintf(stderr, "Vulkan: requested surface format %d; %u supported formats\n", int(requestedFormat), surfaceFormatCount);
++        for (const VkSurfaceFormatKHR &format : surfaceFormats) {
++            fprintf(stderr, "Vulkan: surface format %d, color space %d\n", int(format.format), int(format.colorSpace));
++        }
++#endif
+         for (uint32_t i = 0; i < surfaceFormatCount; i++) {
+             if (surfaceFormats[i].format == requestedFormat) {
+                 compatibleSurfaceFormats.emplace_back(surfaceFormats[i]);
+@@ -2310,6 +2340,14 @@ namespace plume {
+     }
+ 
+     bool VulkanSwapChain::resize() {
++        // Constructor validation can fail before selecting a surface format.
++        // Do not issue an invalid swap-chain request in that state.
++        if (pickedSurfaceFormat.format == VK_FORMAT_UNDEFINED) {
++            return false;
++        }
++#ifndef __ANDROID__
++        if (surface == VK_NULL_HANDLE) return false;
++#endif
+         getWindowSize(width, height);
+ 
+         // Don't recreate the swap chain at all if the window doesn't have a valid size.
+@@ -2317,6 +2355,29 @@ namespace plume {
+             return false;
+         }
+ 
++#if defined(__ANDROID__)
++        // SDL replaces its ANativeWindow after a rotation or surface restart.
++        // A Vulkan surface retains the old window, which now reports -ENODEV.
++        ANativeWindow* currentWindow = currentAndroidWindow();
++        if (!currentWindow) return false;
++        if (currentWindow != desc.renderWindow || surface == VK_NULL_HANDLE) {
++            releaseImageViews();
++            releaseSwapChain();
++            VulkanInterface* renderInterface = commandQueue->device->renderInterface;
++            if (surface != VK_NULL_HANDLE) vkDestroySurfaceKHR(renderInterface->instance, surface, nullptr);
++            surface = VK_NULL_HANDLE;
++            VkAndroidSurfaceCreateInfoKHR info{};
++            info.sType = VK_STRUCTURE_TYPE_ANDROID_SURFACE_CREATE_INFO_KHR;
++            info.window = currentWindow;
++            VkResult result = vkCreateAndroidSurfaceKHR(renderInterface->instance, &info, nullptr, &surface);
++            if (result != VK_SUCCESS) {
++                fprintf(stderr, "Vulkan: replacement surface failed: 0x%X\n", result);
++                return false;
++            }
++            desc.renderWindow = currentWindow;
++            fprintf(stderr, "Vulkan: attached replacement Android window %p\n", currentWindow);
++        }
++#endif
+         // Destroy any image view references to the current swap chain.
+         releaseImageViews();
+ 
+@@ -2340,11 +2401,23 @@ namespace plume {
+         createInfo.clipped = VK_TRUE;
+         createInfo.oldSwapchain = vk;
+ 
+-        VkResult res = vkCreateSwapchainKHR(commandQueue->device->vk, &createInfo, nullptr, &vk);
++#ifdef __ANDROID__
++        fprintf(stderr, "Vulkan: creating swap chain %u x %u, surface %p, old %p\n",
++            width, height, reinterpret_cast<void*>(surface), reinterpret_cast<void*>(vk));
++#endif
++        // Vulkan may clear the output handle on failure. Keep the old handle
++        // separate so it can always be destroyed after retirement.
++        VkSwapchainKHR newSwapChain = VK_NULL_HANDLE;
++        VkResult res = vkCreateSwapchainKHR(commandQueue->device->vk, &createInfo, nullptr, &newSwapChain);
+         if (res != VK_SUCCESS) {
+             fprintf(stderr, "vkCreateSwapchainKHR failed with error code 0x%X.\n", res);
++            releaseSwapChain();
+             return false;
+         }
++        vk = newSwapChain;
++#ifdef __ANDROID__
++        fprintf(stderr, "Vulkan: swap chain created %p\n", reinterpret_cast<void*>(vk));
++#endif
+ 
+         // Store the chosen present mode to identify later whether the swapchain needs to be recreated.
+         createdPresentMode = requiredPresentMode;
+@@ -2395,6 +2468,9 @@ namespace plume {
+     }
+ 
+     bool VulkanSwapChain::needsResize() const {
++#if defined(__ANDROID__)
++        if (currentAndroidWindow() != desc.renderWindow) return true;
++#endif
+         uint32_t windowWidth, windowHeight;
+         getWindowSize(windowWidth, windowHeight);
+         return (vk == VK_NULL_HANDLE) || (windowWidth != width) || (windowHeight != height) || (requiredPresentMode != createdPresentMode);
+@@ -2460,8 +2536,12 @@ namespace plume {
+ #   elif defined(PLUME_SDL_VULKAN_ENABLED)
+         SDL_GetWindowSizeInPixels(desc.renderWindow, (int *)(&dstWidth), (int *)(&dstHeight));
+ #   elif defined(__ANDROID__)
+-        dstWidth = ANativeWindow_getWidth(desc.renderWindow);
+-        dstHeight = ANativeWindow_getHeight(desc.renderWindow);
++        ANativeWindow* window = currentAndroidWindow();
++        const int nativeWidth = window ? ANativeWindow_getWidth(window) : 0;
++        const int nativeHeight = window ? ANativeWindow_getHeight(window) : 0;
++        // Negative native-window errors are not pixel dimensions.
++        dstWidth = static_cast<uint32_t>(std::max(nativeWidth, 0));
++        dstHeight = static_cast<uint32_t>(std::max(nativeHeight, 0));
+ #   elif defined(__linux__)
+         XWindowAttributes attributes;
+         XGetWindowAttributes(desc.renderWindow.display, desc.renderWindow.window, &attributes);
