@@ -1,7 +1,5 @@
 # Mega Man 64: Recompiled — Mobile
 
-![App icon](icons/512.png)
-
 Android and iOS ports of [MegaMan64Recompiled](https://github.com/MegaMan64Recomp/MegaMan64Recompiled), built with N64ModernRuntime and RT64. This is an unofficial community project, not affiliated with Capcom.
 
 Download the APK or IPA from [Releases](https://github.com/DevZer0D4Y/MegaMan64Recompiled-Mobile/releases). Android requires an ARM64 device, Android 8.0 or newer, and a compatible Vulkan GPU. iOS requires an ARM64 device with iOS 16 or newer; sign the IPA for your device before installing it.
