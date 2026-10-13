@@ -17,3 +17,9 @@ Import the ROM using the launcher's file picker. On Android, you can keep it in 
 The application ID is `com.devz.megaman64` on both platforms. Builds using the older IDs have separate storage: back up their saves before moving to this release. Installing this app does not automatically migrate old app data. See [MOBILE.md](MOBILE.md) for save locations and restoration.
 
 See [BUILDING.md](BUILDING.md) for source builds. The source uses pinned upstream submodules and versioned mobile patches, with a new history that excludes local development artifacts. GPL-3.0 licensing and upstream attribution are preserved; see [LICENSE](LICENSE) and [NOTICE.md](NOTICE.md).
+
+## Support me
+
+If you want to support me and stay up to date with this and my other projects:
+
+[Ko-Fi](https://ko-fi.com/dev_zer0) · [Discord](https://discord.gg/uFChheZEWX) · [YouTube](https://www.youtube.com/@develop_erZ)
