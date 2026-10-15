@@ -65,3 +65,6 @@ work/
 *.user
 *.suo
 *.swp
+
+# Built Quest native libraries
+android/quest/libs/

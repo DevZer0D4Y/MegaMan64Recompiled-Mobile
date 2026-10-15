@@ -80,7 +80,7 @@ def prepare():
     wrapper.write_text('#!/bin/sh\nexport ' + loader + '=' + shlex.quote(str(base / 'lib' / machine)) + '\nexec ' + shlex.quote(str(binary)) + ' "$@"\n')
     wrapper.chmod(0o755)
     print('\nHost tools ready. After generating game sources, build with:')
-    print('android/gradlew --project-dir android assembleDebug ' + shlex.quote('-PhostDxc=' + str(wrapper)) + ' ' + shlex.quote('-PhostFileToC=' + str(HOST / 'file_to_c/file_to_c')))
+    print('android/gradlew --project-dir android assembleStandardDebug ' + shlex.quote('-PhostDxc=' + str(wrapper)) + ' ' + shlex.quote('-PhostFileToC=' + str(HOST / 'file_to_c/file_to_c')))
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)

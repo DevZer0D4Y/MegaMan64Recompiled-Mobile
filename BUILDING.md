@@ -34,12 +34,12 @@ Use explicit LLVM executable paths if your default `clang` lacks MIPS. With CMak
 Install JDK 17, Android SDK 35, NDK `27.2.12479018`, and SDK CMake `3.22.1`. Set `ANDROID_HOME` or create an untracked `android/local.properties` with `sdk.dir` pointing to your SDK. From the repository root:
 
 ```sh
-android/gradlew -p android assembleDebug \
+android/gradlew -p android assembleStandardDebug \
   -PhostDxc="$PWD/build-android-host/dxc-host" \
   -PhostFileToC="$PWD/build-android-host/file_to_c/file_to_c"
 ```
 
-The APK appears at `android/app/build/outputs/apk/debug/app-debug.apk`. For release packaging, use `assembleRelease`, align with `zipalign -P 16`, then sign using a privately stored key with `apksigner`. Signing keys/passwords must remain outside the repository. Only `arm64-v8a` is supported.
+The APK appears at `android/app/build/outputs/apk/standard/debug/app-standard-debug.apk`. For release packaging, use `assembleStandardRelease`, align with `zipalign -P 16`, then sign using a privately stored key with `apksigner`. Signing keys/passwords must remain outside the repository. Only `arm64-v8a` is supported.
 
 ## iOS
 
@@ -71,3 +71,7 @@ python3 scripts/verify_mobile_package.py path/to/app.ipa
 ```
 
 Compiler prefix mapping removes local checkout paths from diagnostic strings. Release executables should be stripped and the finished archives scanned again; clean source alone does not guarantee a clean binary. CI checks the public source without needing a ROM. Full mobile builds require your own ROM and installed SDKs.
+
+## Quest VR preview
+
+See [android/quest/README.md](android/quest/README.md) for the separate experimental OpenXR virtual-screen build.
