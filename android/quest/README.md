@@ -50,7 +50,7 @@ The bridge uses the checksum-pinned Khronos OpenXR Android loader 1.1.63, licens
 
 ## Validation status
 
-ARM64 compilation, native linkage, Java/Dex generation, package IDs/manifest metadata, private-path/ROM scans, signing, and archive structure are checked during packaging. A physical Quest is still required to verify first launch, controller navigation, Vulkan-to-OpenXR Surface presentation, file picker returns, sleep/resume, recentering, and frame rate. Run the packaging check with your Android SDK's `aapt`:
+A host test exercises 100 in-flight-frame suspension/drain/resume handshakes using the actual presentation gate. ARM64 compilation, native linkage, Java/Dex generation, package IDs/manifest metadata, private-path/ROM scans, signing, and archive structure are checked during packaging. A physical Quest is still required to verify first launch, controller navigation, Vulkan-to-OpenXR Surface presentation, file picker returns, sleep/resume, recentering, and frame rate. Run the packaging check with your Android SDK's `aapt`:
 
 ```sh
 python3 scripts/verify_quest_package.py path/to/Quest.apk --aapt "$ANDROID_HOME/build-tools/35.0.0/aapt"
