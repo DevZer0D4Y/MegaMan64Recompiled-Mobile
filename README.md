@@ -6,6 +6,10 @@ Download the APK or IPA from [Releases](https://github.com/DevZer0D4Y/MegaMan64R
 
 Both platforms include editable gameplay and menu touch layouts, a movement stick, controller support, ROM import, and persistent saves. Use **EDIT** to move buttons or change size, opacity, and colors. **MENU PAD** and **GAME PAD** switch layouts; returning to gameplay from app settings honors pending Apply/Discard changes.
 
+## Immersive VR development
+
+This branch contains early work for a separate first-person Quest conversion. It is **not ready as an immersive APK**: stereo game rendering, tracked game arms and motion-aimed weapons remain unfinished. See [development status](android/quest/IMMERSIVE_STATUS.md).
+
 ## Quest VR preview
 
 The [separate experimental Quest APK](https://github.com/DevZer0D4Y/MegaMan64Recompiled-Mobile/releases/tag/v0.9.1-quest-preview.1) adds an OpenXR virtual screen and Quest Touch controls. It uses `com.devz.megaman64.quest` and independent app storage. The game world remains a single view; this is not full stereoscopic 3D. See [Quest setup and controls](android/quest/README.md). Physical-headset validation is still required.

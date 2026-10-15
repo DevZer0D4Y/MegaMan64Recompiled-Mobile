@@ -1,4 +1,5 @@
 #include <jni.h>
+#include "vr/tracking.h"
 #include <EGL/egl.h>
 #include <openxr/openxr.h>
 #include <openxr/openxr_platform.h>
@@ -24,6 +25,7 @@ std::atomic<int> mode{2};
 using Gate = void (*)(bool);
 std::atomic<Gate> gate{nullptr};
 std::atomic<bool> xrVisible{false};
+std::atomic<bool> androidResumed{false};
 using Touch = void (*)(JNIEnv*, jclass, jint);
 using Stick = void (*)(JNIEnv*, jclass, jfloat, jfloat);
 using MenuKey = void (*)(JNIEnv*, jclass, jint, jboolean);
@@ -32,6 +34,20 @@ Touch touch = nullptr;
 Stick stick = nullptr;
 MenuKey menuKey = nullptr;
 Menu menu = nullptr;
+using SubmitTracking = void (*)(const MMVrTracking*);
+using ClearTracking = void (*)();
+SubmitTracking submitTracking = nullptr;
+std::atomic<ClearTracking> clearTracking{nullptr};
+using TrackingStatus = void (*)(uint32_t, int);
+std::atomic<TrackingStatus> trackingStatus{nullptr};
+MMVrPose copyPose(const XrPosef& input, XrSpaceLocationFlags flags) {
+    MMVrPose pose{};
+    pose.orientation[0] = input.orientation.x; pose.orientation[1] = input.orientation.y;
+    pose.orientation[2] = input.orientation.z; pose.orientation[3] = input.orientation.w;
+    pose.position[0] = input.position.x; pose.position[1] = input.position.y; pose.position[2] = input.position.z;
+    pose.flags = uint32_t(flags & (XR_SPACE_LOCATION_ORIENTATION_VALID_BIT | XR_SPACE_LOCATION_POSITION_VALID_BIT));
+    return pose;
+}
 void check(XrResult result, const char* operation) {
     if (XR_FAILED(result)) throw std::runtime_error(std::string(operation) + " failed (OpenXR " + std::to_string(result) + ")");
 }
@@ -53,6 +69,11 @@ XrPath path(XrInstance instance, const char* text) {
 struct Input {
     XrActionSet set = XR_NULL_HANDLE;
     XrAction leftStick, rightStick, leftTrigger, rightTrigger, leftGrip, rightGrip;
+    XrAction gripPose, aimPose;
+    XrPath handPaths[2]{};
+    XrSpace gripSpaces[2]{}, aimSpaces[2]{};
+    uint64_t trackingSequence = 0;
+    uint32_t originGeneration = 1;
     XrAction a, b, x, y, menuButton, recenter, start;
     std::array<bool, 7> held{};
     std::array<std::chrono::steady_clock::time_point, 7> repeatAt{};
@@ -62,12 +83,16 @@ struct Input {
         XrActionCreateInfo info{XR_TYPE_ACTION_CREATE_INFO}; info.actionType = type;
         std::strncpy(info.actionName, name, XR_MAX_ACTION_NAME_SIZE - 1);
         std::strncpy(info.localizedActionName, name, XR_MAX_LOCALIZED_ACTION_NAME_SIZE - 1);
+        if (type == XR_ACTION_TYPE_POSE_INPUT) { info.countSubactionPaths = 2; info.subactionPaths = handPaths; }
         XrAction result; check(xrCreateAction(set, &info, &result), "xrCreateAction"); return result;
     }
     void initialize(XrInstance instance, XrSession session) {
         XrActionSetCreateInfo info{XR_TYPE_ACTION_SET_CREATE_INFO};
         std::strcpy(info.actionSetName, "gamepad"); std::strcpy(info.localizedActionSetName, "Game controls");
         check(xrCreateActionSet(instance, &info, &set), "xrCreateActionSet");
+        handPaths[0] = path(instance, "/user/hand/left"); handPaths[1] = path(instance, "/user/hand/right");
+        gripPose = create(XR_ACTION_TYPE_POSE_INPUT, "grip_pose");
+        aimPose = create(XR_ACTION_TYPE_POSE_INPUT, "aim_pose");
         leftStick = create(XR_ACTION_TYPE_VECTOR2F_INPUT, "movement");
         rightStick = create(XR_ACTION_TYPE_VECTOR2F_INPUT, "c_buttons");
         leftTrigger = create(XR_ACTION_TYPE_FLOAT_INPUT, "left_trigger");
@@ -80,6 +105,8 @@ struct Input {
         recenter = create(XR_ACTION_TYPE_BOOLEAN_INPUT, "recenter"); start = create(XR_ACTION_TYPE_BOOLEAN_INPUT, "start");
         std::vector<XrActionSuggestedBinding> bindings;
         auto bind = [&](XrAction action, const char* text) { bindings.push_back({action, path(instance, text)}); };
+        bind(gripPose, "/user/hand/left/input/grip/pose"); bind(gripPose, "/user/hand/right/input/grip/pose");
+        bind(aimPose, "/user/hand/left/input/aim/pose"); bind(aimPose, "/user/hand/right/input/aim/pose");
         bind(leftStick, "/user/hand/left/input/thumbstick"); bind(rightStick, "/user/hand/right/input/thumbstick");
         bind(leftTrigger, "/user/hand/left/input/trigger/value"); bind(rightTrigger, "/user/hand/right/input/trigger/value");
         bind(leftGrip, "/user/hand/left/input/squeeze/value"); bind(rightGrip, "/user/hand/right/input/squeeze/value");
@@ -93,6 +120,12 @@ struct Input {
         check(xrSuggestInteractionProfileBindings(instance, &suggested), "Touch controller bindings");
         XrSessionActionSetsAttachInfo attach{XR_TYPE_SESSION_ACTION_SETS_ATTACH_INFO}; attach.countActionSets = 1; attach.actionSets = &set;
         check(xrAttachSessionActionSets(session, &attach), "xrAttachSessionActionSets");
+        for (int hand = 0; hand < 2; ++hand) {
+            XrActionSpaceCreateInfo space{XR_TYPE_ACTION_SPACE_CREATE_INFO};
+            space.subactionPath = handPaths[hand]; space.poseInActionSpace.orientation.w = 1;
+            space.action = gripPose; check(xrCreateActionSpace(session, &space, &gripSpaces[hand]), "Grip action space");
+            space.action = aimPose; check(xrCreateActionSpace(session, &space, &aimSpaces[hand]), "Aim action space");
+        }
     }
     bool boolean(XrSession session, XrAction action) {
         XrActionStateGetInfo info{XR_TYPE_ACTION_STATE_GET_INFO}; info.action = action;
@@ -113,6 +146,44 @@ struct Input {
         touch(env, nullptr, 0); stick(env, nullptr, 0, 0);
         for (int i = 0; i < 7; ++i) { if (held[i]) menuKey(env, nullptr, i, false); held[i] = false; }
         menuHeld = recenterHeld = false;
+    }
+    MMVrPose locateHand(XrSession session, XrSpace local, XrTime time, XrAction action, XrSpace space, int hand) {
+        XrActionStateGetInfo get{XR_TYPE_ACTION_STATE_GET_INFO}; get.action = action; get.subactionPath = handPaths[hand];
+        XrActionStatePose active{XR_TYPE_ACTION_STATE_POSE};
+        check(xrGetActionStatePose(session, &get, &active), "Controller pose activity");
+        if (!active.isActive) return {};
+        XrSpaceLocation location{XR_TYPE_SPACE_LOCATION};
+        check(xrLocateSpace(space, local, time, &location), "Controller pose");
+        return copyPose(location.pose, location.locationFlags);
+    }
+    void publishTracking(XrSession session, XrSpace local, XrSpace view, XrTime time) {
+        if (!submitTracking) return;
+        MMVrTracking tracking{}; tracking.abi = MM_VR_ABI; tracking.size = sizeof(tracking);
+        tracking.originGeneration = originGeneration;
+        tracking.sequence = ++trackingSequence; tracking.predictedDisplayTime = time; tracking.focused = 1;
+        XrSpaceLocation head{XR_TYPE_SPACE_LOCATION}; check(xrLocateSpace(view, local, time, &head), "Head tracking");
+        tracking.head = copyPose(head.pose, head.locationFlags);
+        XrViewLocateInfo locate{XR_TYPE_VIEW_LOCATE_INFO}; locate.viewConfigurationType = XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;
+        locate.displayTime = time; locate.space = local;
+        XrViewState state{XR_TYPE_VIEW_STATE}; XrView views[2]{{XR_TYPE_VIEW}, {XR_TYPE_VIEW}};
+        check(xrLocateViews(session, &locate, &state, 2, &tracking.eyeCount, views), "Stereo eye poses");
+        XrSpaceLocationFlags flags = 0;
+        if (state.viewStateFlags & XR_VIEW_STATE_ORIENTATION_VALID_BIT) flags |= XR_SPACE_LOCATION_ORIENTATION_VALID_BIT;
+        if (state.viewStateFlags & XR_VIEW_STATE_POSITION_VALID_BIT) flags |= XR_SPACE_LOCATION_POSITION_VALID_BIT;
+        for (int eye = 0; eye < 2; ++eye) {
+            tracking.eyes[eye].pose = copyPose(views[eye].pose, flags);
+            tracking.eyes[eye].fovLeft = views[eye].fov.angleLeft; tracking.eyes[eye].fovRight = views[eye].fov.angleRight;
+            tracking.eyes[eye].fovUp = views[eye].fov.angleUp; tracking.eyes[eye].fovDown = views[eye].fov.angleDown;
+        }
+        for (int hand = 0; hand < 2; ++hand) {
+            tracking.grip[hand] = locateHand(session, local, time, gripPose, gripSpaces[hand], hand);
+            tracking.aim[hand] = locateHand(session, local, time, aimPose, aimSpaces[hand], hand);
+            tracking.trigger[hand] = scalar(session, hand ? rightTrigger : leftTrigger);
+            tracking.squeeze[hand] = scalar(session, hand ? rightGrip : leftGrip);
+            auto movement = vector(session, hand ? rightStick : leftStick);
+            tracking.stick[hand][0] = movement.x; tracking.stick[hand][1] = movement.y;
+        }
+        submitTracking(&tracking);
     }
     bool update(JNIEnv* env, XrSession session) {
         XrActiveActionSet active{set, XR_NULL_PATH};
@@ -160,10 +231,14 @@ void run() {
     jobject surface = nullptr;
     EGLDisplay display = EGL_NO_DISPLAY; EGLContext context = EGL_NO_CONTEXT; EGLSurface buffer = EGL_NO_SURFACE;
     Input input;
-    bool running = false, visible = false, centered = false;
+    bool running = false, visible = false, centered = false, focused = false;
     try {
         void* main = dlopen("libmain.so", RTLD_NOW);
         if (!main) throw std::runtime_error("Game library unavailable");
+        trackingStatus.store(reinterpret_cast<TrackingStatus>(dlsym(main, "mm_vr_set_tracking_status")));
+        if (trackingStatus.load()) { trackingStatus.load()(0, androidResumed.load()); trackingStatus.load()(1, 0); }
+        submitTracking = reinterpret_cast<SubmitTracking>(dlsym(main, "mm_vr_submit_tracking"));
+        clearTracking.store(reinterpret_cast<ClearTracking>(dlsym(main, "mm_vr_clear_tracking")));
         gate.store(reinterpret_cast<Gate>(dlsym(main, "megaman64_quest_surface_enabled")));
         touch = reinterpret_cast<Touch>(dlsym(main, "Java_com_devz_megaman64_MegaManActivity_nativeTouch"));
         stick = reinterpret_cast<Stick>(dlsym(main, "Java_com_devz_megaman64_MegaManActivity_nativeStick"));
@@ -230,6 +305,9 @@ void run() {
                         XrSessionBeginInfo begin{XR_TYPE_SESSION_BEGIN_INFO}; begin.primaryViewConfigurationType = XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;
                         check(xrBeginSession(session, &begin), "xrBeginSession"); running = true;
                     }
+                    focused = state == XR_SESSION_STATE_FOCUSED;
+                    if (trackingStatus.load()) trackingStatus.load()(1, focused);
+                    if (!focused && clearTracking.load()) clearTracking.load()();
                     bool nowVisible = state == XR_SESSION_STATE_VISIBLE || state == XR_SESSION_STATE_FOCUSED;
                     if (visible != nowVisible) {
                         visible = nowVisible; xrVisible.store(visible);
@@ -238,7 +316,10 @@ void run() {
                     }
                     if (state == XR_SESSION_STATE_STOPPING && running) { gate.load()(false); check(xrEndSession(session), "xrEndSession"); running = false; }
                     if (state == XR_SESSION_STATE_EXITING || state == XR_SESSION_STATE_LOSS_PENDING) stopping.store(true);
-                } else if (event.type == XR_TYPE_EVENT_DATA_REFERENCE_SPACE_CHANGE_PENDING) centered = false;
+                } else if (event.type == XR_TYPE_EVENT_DATA_REFERENCE_SPACE_CHANGE_PENDING) {
+                    centered = false; ++input.originGeneration;
+                    if (clearTracking.load()) clearTracking.load()();
+                }
                 else if (event.type == XR_TYPE_EVENT_DATA_INSTANCE_LOSS_PENDING) stopping.store(true);
                 event = {XR_TYPE_EVENT_DATA_BUFFER};
             }
@@ -247,6 +328,9 @@ void run() {
             XrFrameWaitInfo wait{XR_TYPE_FRAME_WAIT_INFO}; XrFrameState frame{XR_TYPE_FRAME_STATE}; check(xrWaitFrame(session, &wait, &frame), "xrWaitFrame");
             XrFrameBeginInfo begin{XR_TYPE_FRAME_BEGIN_INFO}; check(xrBeginFrame(session, &begin), "xrBeginFrame");
             bool recenter = visible && input.update(env, session);
+            if (recenter) ++input.originGeneration;
+            if (focused && androidResumed.load() && xrVisible.load()) input.publishTracking(session, local, view, frame.predictedDisplayTime);
+            else if (clearTracking.load()) clearTracking.load()();
             if (visible && (!centered || recenter)) {
                 XrSpaceLocation head{XR_TYPE_SPACE_LOCATION}; check(xrLocateSpace(view, local, frame.predictedDisplayTime, &head), "Head pose");
                 constexpr XrSpaceLocationFlags valid = XR_SPACE_LOCATION_POSITION_VALID_BIT | XR_SPACE_LOCATION_ORIENTATION_VALID_BIT;
@@ -270,6 +354,12 @@ void run() {
     if (touch && stick && menuKey) input.clear(env);
     surfaceCallback(env, nullptr);
     if (swapchain) xrDestroySwapchain(swapchain);
+    if (trackingStatus.load()) trackingStatus.load()(1, 0);
+    if (clearTracking.load()) clearTracking.load()();
+    for (int hand = 0; hand < 2; ++hand) {
+        if (input.gripSpaces[hand]) xrDestroySpace(input.gripSpaces[hand]);
+        if (input.aimSpaces[hand]) xrDestroySpace(input.aimSpaces[hand]);
+    }
     if (view) xrDestroySpace(view); if (local) xrDestroySpace(local);
     if (session) xrDestroySession(session); if (input.set) xrDestroyActionSet(input.set); if (instance) xrDestroyInstance(instance);
     if (surface) env->DeleteGlobalRef(surface);
@@ -290,4 +380,4 @@ extern "C" JNIEXPORT void JNICALL Java_com_devz_megaman64_QuestActivity_nativeSt
     stopping.store(true); if (worker.joinable()) worker.join(); if (activity) env->DeleteGlobalRef(activity); activity = nullptr;
 }
 extern "C" JNIEXPORT void JNICALL Java_com_devz_megaman64_QuestActivity_nativeMode(JNIEnv*, jclass, jint value) { mode.store(value); }
-extern "C" JNIEXPORT void JNICALL Java_com_devz_megaman64_QuestActivity_nativeSurfaceEnabled(JNIEnv*, jclass, jboolean enabled) { if (gate.load()) gate.load()(enabled && xrVisible.load()); }
+extern "C" JNIEXPORT void JNICALL Java_com_devz_megaman64_QuestActivity_nativeSurfaceEnabled(JNIEnv*, jclass, jboolean enabled) { androidResumed.store(enabled); if (trackingStatus.load()) trackingStatus.load()(0, enabled); if (!enabled && clearTracking.load()) clearTracking.load()(); if (gate.load()) gate.load()(enabled && xrVisible.load()); }

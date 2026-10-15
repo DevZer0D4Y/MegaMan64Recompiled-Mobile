@@ -12,7 +12,7 @@ set_target_properties(openxr_loader PROPERTIES IMPORTED_LOCATION "${OPENXR_ROOT}
 add_library(quest_vr SHARED quest_vr.cpp)
 target_compile_features(quest_vr PRIVATE cxx_std_17)
 target_compile_definitions(quest_vr PRIVATE XR_USE_PLATFORM_ANDROID XR_USE_GRAPHICS_API_OPENGL_ES)
-target_include_directories(quest_vr PRIVATE "${OPENXR_ROOT}/prefab/modules/headers/include")
+target_include_directories(quest_vr PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../../../include" "${OPENXR_ROOT}/prefab/modules/headers/include")
 target_compile_options(quest_vr PRIVATE "-ffile-prefix-map=${CMAKE_CURRENT_SOURCE_DIR}=." "-ffile-prefix-map=${CMAKE_BINARY_DIR}=./build")
 target_link_libraries(quest_vr PRIVATE openxr_loader EGL android log dl)
 target_link_options(quest_vr PRIVATE "-Wl,-z,max-page-size=16384")
