@@ -42,6 +42,16 @@ android {
     }
     // The native game reads assets/<name>. Preserve that layout inside the APK.
     sourceSets.main.assets.srcDirs = [layout.buildDirectory.dir('generated/gameAssets')]
+    flavorDimensions 'platform'
+    productFlavors {
+        standard { dimension 'platform' }
+        quest { dimension 'platform'; applicationIdSuffix '.quest'; versionCode 3; versionName '0.9.1-quest-preview.1' }
+    }
+    sourceSets.quest {
+        manifest.srcFile '../quest/AndroidManifest.xml'
+        java.srcDirs = ['../quest/java']
+        jniLibs.srcDirs = ['../quest/libs']
+    }
     buildTypes { release { minifyEnabled false } }
 }
 
