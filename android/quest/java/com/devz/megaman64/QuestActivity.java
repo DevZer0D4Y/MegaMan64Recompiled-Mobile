@@ -42,6 +42,9 @@ public final class QuestActivity extends MegaManActivity {
                 .setMessage(message).setPositiveButton("Close", (dialog, which) -> finish()).show();
         });
     }
+    @Override public void onWindowFocusChanged(boolean hasFocus) {
+        super.onWindowFocusChanged(hasFocus || (questSurface != null && questSurface.hasXRSurface()));
+    }
     @Override protected void onResume() {
         super.onResume();
         nativeSurfaceEnabled(true);
