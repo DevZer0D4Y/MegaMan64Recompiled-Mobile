@@ -139,13 +139,14 @@ index a5f30a3..3bfbf7b 100644
          description.vendor = mtl->supportsFamily(MTL::GPUFamilyApple1) ? RenderDeviceVendor::APPLE : getRenderDeviceVendor(mtl->registryID());
          description.dedicatedVideoMemory = mtl->recommendedMaxWorkingSetSize();
 diff --git a/plume_vulkan.cpp b/plume_vulkan.cpp
-index 2800022..db295b6 100644
+index 2800022..210b8b7 100644
 --- a/plume_vulkan.cpp
 +++ b/plume_vulkan.cpp
-@@ -14,6 +14,10 @@
+@@ -14,6 +14,11 @@
  #include <cmath>
  #include <climits>
  #include <unordered_map>
++#include <condition_variable>
 +#if defined(__ANDROID__)
 +#include <SDL.h>
 +#include <SDL_syswm.h>
@@ -153,20 +154,23 @@ index 2800022..db295b6 100644
  
  #if DLSS_ENABLED
  #   include "render/plume_dlss.h"
-@@ -28,6 +32,23 @@
+@@ -28,6 +33,26 @@
  // - Fix resource pools.
  
  namespace plume {
 +#if defined(__ANDROID__)
 +    // The OpenXR Android Surface may only receive frames while the XR session is visible.
 +    static std::mutex questSurfaceMutex;
++    static std::condition_variable questSurfaceDrained;
++    static uint32_t questFramesInFlight = 0;
 +    static bool questSurfaceRequested = false;
 +    static bool questSurfaceEnabled = true;
 +    static VulkanCommandQueue* questSurfaceQueue = nullptr;
 +    extern "C" __attribute__((visibility("default"))) void megaman64_quest_surface_enabled(bool enabled) {
-+        std::scoped_lock lock(questSurfaceMutex);
++        std::unique_lock lock(questSurfaceMutex);
 +        questSurfaceRequested = true;
 +        questSurfaceEnabled = enabled;
++        if (!enabled) questSurfaceDrained.wait(lock, [] { return questFramesInFlight == 0; });
 +        if (!enabled && questSurfaceQueue) {
 +            std::scoped_lock queueLock(*questSurfaceQueue->queue->mutex);
 +            vkQueueWaitIdle(questSurfaceQueue->queue->vk);
@@ -177,7 +181,7 @@ index 2800022..db295b6 100644
      // Backend constants.
  
      // Required buffer alignment for acceleration structures.
-@@ -1899,7 +1920,14 @@ namespace plume {
+@@ -1899,7 +1924,14 @@ namespace plume {
              boundlessRangeSize = std::max(desc.boundlessRangeSize, 1U);
  
              const RenderDescriptorRange &lastDescriptorRange = desc.descriptorRanges[desc.descriptorRangesCount - 1];
@@ -193,7 +197,7 @@ index 2800022..db295b6 100644
              rangeCount--;
          }
  
-@@ -1931,7 +1959,11 @@ namespace plume {
+@@ -1931,7 +1963,11 @@ namespace plume {
  
          VkResult res = vkAllocateDescriptorSets(device->vk, &allocateInfo, &vk);
          if (res != VK_SUCCESS) {
@@ -206,7 +210,7 @@ index 2800022..db295b6 100644
              return;
          }
      }
-@@ -2071,6 +2103,15 @@ namespace plume {
+@@ -2071,6 +2107,15 @@ namespace plume {
          }
      }
  
@@ -222,7 +226,7 @@ index 2800022..db295b6 100644
      // VulkanSwapChain
  
      VulkanSwapChain::VulkanSwapChain(VulkanCommandQueue *commandQueue, const RenderSwapChainDesc &desc) {
-@@ -2079,6 +2120,9 @@ namespace plume {
+@@ -2079,6 +2124,9 @@ namespace plume {
  
          this->commandQueue = commandQueue;
          this->desc = desc;
@@ -232,7 +236,7 @@ index 2800022..db295b6 100644
  
          VkResult res;
  
-@@ -2197,6 +2241,12 @@ namespace plume {
+@@ -2197,6 +2245,12 @@ namespace plume {
          // Check if the format we requested is part of the supported surface formats.
          std::vector<VkSurfaceFormatKHR> compatibleSurfaceFormats;
          VkFormat requestedFormat = toVk(desc.format);
@@ -245,27 +249,33 @@ index 2800022..db295b6 100644
          for (uint32_t i = 0; i < surfaceFormatCount; i++) {
              if (surfaceFormats[i].format == requestedFormat) {
                  compatibleSurfaceFormats.emplace_back(surfaceFormats[i]);
-@@ -2241,6 +2291,9 @@ namespace plume {
+@@ -2241,6 +2295,9 @@ namespace plume {
      }
  
      VulkanSwapChain::~VulkanSwapChain() {
 +#if defined(__ANDROID__)
-+        { std::scoped_lock lock(questSurfaceMutex); if (questSurfaceQueue == commandQueue) questSurfaceQueue = nullptr; }
++        { std::scoped_lock lock(questSurfaceMutex); if (questSurfaceQueue == commandQueue) { questSurfaceQueue = nullptr; questFramesInFlight = 0; questSurfaceDrained.notify_all(); } }
 +#endif
          releaseImageViews();
          releaseSwapChain();
  
-@@ -2254,6 +2307,9 @@ namespace plume {
+@@ -2254,6 +2311,15 @@ namespace plume {
      }
  
      bool VulkanSwapChain::present(uint32_t textureIndex, RenderCommandSemaphore **waitSemaphores, uint32_t waitSemaphoreCount) {
 +#if defined(__ANDROID__)
 +        std::unique_lock questLock(questSurfaceMutex);
++        struct CompletedFrame {
++            ~CompletedFrame() {
++                if (questFramesInFlight) --questFramesInFlight;
++                questSurfaceDrained.notify_all();
++            }
++        } completedFrame;
 +#endif
          thread_local std::vector<VkSemaphore> waitSemaphoresVector;
          waitSemaphoresVector.clear();
          for (uint32_t i = 0; i < waitSemaphoreCount; i++) {
-@@ -2261,6 +2317,19 @@ namespace plume {
+@@ -2261,6 +2327,19 @@ namespace plume {
              waitSemaphoresVector.emplace_back(interfaceSemaphore->vk);
          }
  
@@ -285,7 +295,7 @@ index 2800022..db295b6 100644
          VkPresentInfoKHR presentInfo = {};
          presentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
          presentInfo.pSwapchains = &vk;
-@@ -2310,6 +2379,14 @@ namespace plume {
+@@ -2310,6 +2389,14 @@ namespace plume {
      }
  
      bool VulkanSwapChain::resize() {
@@ -300,7 +310,7 @@ index 2800022..db295b6 100644
          getWindowSize(width, height);
  
          // Don't recreate the swap chain at all if the window doesn't have a valid size.
-@@ -2317,6 +2394,29 @@ namespace plume {
+@@ -2317,6 +2404,29 @@ namespace plume {
              return false;
          }
  
@@ -330,7 +340,7 @@ index 2800022..db295b6 100644
          // Destroy any image view references to the current swap chain.
          releaseImageViews();
  
-@@ -2340,11 +2440,23 @@ namespace plume {
+@@ -2340,11 +2450,23 @@ namespace plume {
          createInfo.clipped = VK_TRUE;
          createInfo.oldSwapchain = vk;
  
@@ -355,7 +365,7 @@ index 2800022..db295b6 100644
  
          // Store the chosen present mode to identify later whether the swapchain needs to be recreated.
          createdPresentMode = requiredPresentMode;
-@@ -2395,6 +2507,9 @@ namespace plume {
+@@ -2395,6 +2517,9 @@ namespace plume {
      }
  
      bool VulkanSwapChain::needsResize() const {
@@ -365,7 +375,7 @@ index 2800022..db295b6 100644
          uint32_t windowWidth, windowHeight;
          getWindowSize(windowWidth, windowHeight);
          return (vk == VK_NULL_HANDLE) || (windowWidth != width) || (windowHeight != height) || (requiredPresentMode != createdPresentMode);
-@@ -2460,8 +2575,12 @@ namespace plume {
+@@ -2460,8 +2585,12 @@ namespace plume {
  #   elif defined(PLUME_SDL_VULKAN_ENABLED)
          SDL_GetWindowSizeInPixels(desc.renderWindow, (int *)(&dstWidth), (int *)(&dstHeight));
  #   elif defined(__ANDROID__)
@@ -380,7 +390,7 @@ index 2800022..db295b6 100644
  #   elif defined(__linux__)
          XWindowAttributes attributes;
          XGetWindowAttributes(desc.renderWindow.display, desc.renderWindow.window, &attributes);
-@@ -2480,7 +2599,14 @@ namespace plume {
+@@ -2480,11 +2609,21 @@ namespace plume {
          assert(signalSemaphore != nullptr);
  
          VulkanCommandSemaphore *interfaceSemaphore = static_cast<VulkanCommandSemaphore *>(signalSemaphore);
@@ -396,3 +406,10 @@ index 2800022..db295b6 100644
          if ((res != VK_SUCCESS) && (res != VK_SUBOPTIMAL_KHR)) {
              return false;
          }
+ 
++#if defined(__ANDROID__)
++        if (questSurfaceRequested) ++questFramesInFlight;
++#endif
+         return true;
+     }
+ 
