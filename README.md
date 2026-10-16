@@ -8,7 +8,7 @@ Both platforms include editable gameplay and menu touch layouts, a movement stic
 
 ## Quest VR preview
 
-The [separate experimental Quest APK](https://github.com/DevZer0D4Y/MegaMan64Recompiled-Mobile/releases/tag/v0.9.1-quest-preview.1) adds an OpenXR virtual screen and Quest Touch controls. It uses `com.devz.megaman64.quest` and independent app storage. The game world remains a single view; this is not full stereoscopic 3D. See [Quest setup and controls](android/quest/README.md). Physical-headset validation is still required.
+The [separate experimental Quest APK](https://github.com/DevZer0D4Y/MegaMan64Recompiled-Mobile/releases/tag/v0.9.1-quest-preview.2) adds an OpenXR virtual screen and Quest Touch controls. Preview 2 corrects the upside-down image from the Vulkan-to-OpenXR Surface path. It uses `com.devz.megaman64.quest` and independent app storage. The game world remains a single view; this is not full stereoscopic 3D. See [Quest setup and controls](android/quest/README.md). Physical-headset validation is still required.
 
 ## ROM requirement
 
