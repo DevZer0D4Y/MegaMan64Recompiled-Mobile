@@ -175,7 +175,8 @@ void run() {
         check(xrGetInstanceProcAddr(XR_NULL_HANDLE, "xrInitializeLoaderKHR", reinterpret_cast<PFN_xrVoidFunction*>(&initializeLoader)), "OpenXR loader initialization");
         XrLoaderInitInfoAndroidKHR loader{XR_TYPE_LOADER_INIT_INFO_ANDROID_KHR}; loader.applicationVM = vm; loader.applicationContext = activity;
         check(initializeLoader(reinterpret_cast<const XrLoaderInitInfoBaseHeaderKHR*>(&loader)), "xrInitializeLoaderKHR");
-        const char* extensions[]{XR_KHR_ANDROID_CREATE_INSTANCE_EXTENSION_NAME, XR_KHR_OPENGL_ES_ENABLE_EXTENSION_NAME, XR_KHR_ANDROID_SURFACE_SWAPCHAIN_EXTENSION_NAME};
+        const char* extensions[]{XR_KHR_ANDROID_CREATE_INSTANCE_EXTENSION_NAME, XR_KHR_OPENGL_ES_ENABLE_EXTENSION_NAME,
+            XR_KHR_ANDROID_SURFACE_SWAPCHAIN_EXTENSION_NAME, XR_FB_COMPOSITION_LAYER_IMAGE_LAYOUT_EXTENSION_NAME};
         uint32_t count; check(xrEnumerateInstanceExtensionProperties(nullptr, 0, &count, nullptr), "Extension count");
         std::vector<XrExtensionProperties> supported(count, {XR_TYPE_EXTENSION_PROPERTIES});
         check(xrEnumerateInstanceExtensionProperties(nullptr, count, &count, supported.data()), "Extension list");
@@ -186,7 +187,7 @@ void run() {
         XrInstanceCreateInfoAndroidKHR android{XR_TYPE_INSTANCE_CREATE_INFO_ANDROID_KHR}; android.applicationVM = vm; android.applicationActivity = activity;
         XrInstanceCreateInfo create{XR_TYPE_INSTANCE_CREATE_INFO}; create.next = &android;
         std::strcpy(create.applicationInfo.applicationName, "MegaMan64 Quest"); create.applicationInfo.applicationVersion = 1; create.applicationInfo.apiVersion = XR_API_VERSION_1_0;
-        create.enabledExtensionCount = 3; create.enabledExtensionNames = extensions;
+        create.enabledExtensionCount = sizeof(extensions) / sizeof(extensions[0]); create.enabledExtensionNames = extensions;
         check(xrCreateInstance(&create, &instance), "xrCreateInstance");
         XrSystemGetInfo systemInfo{XR_TYPE_SYSTEM_GET_INFO}; systemInfo.formFactor = XR_FORM_FACTOR_HEAD_MOUNTED_DISPLAY;
         XrSystemId system; check(xrGetSystem(instance, &systemInfo, &system), "xrGetSystem");
@@ -257,7 +258,13 @@ void run() {
                     screenPose.position = {head.pose.position.x - 3 * std::sin(yaw), head.pose.position.y, head.pose.position.z - 3 * std::cos(yaw)}; centered = true;
                 }
             }
-            XrCompositionLayerQuad quad{XR_TYPE_COMPOSITION_LAYER_QUAD}; quad.space = local; quad.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
+            // Vulkan writes the Android Surface with a top-left image origin, while this
+            // GLES OpenXR session samples layers bottom-left. Flip image sampling only:
+            // rotating the quad would also invert its pose and horizontal direction.
+            XrCompositionLayerImageLayoutFB imageLayout{XR_TYPE_COMPOSITION_LAYER_IMAGE_LAYOUT_FB};
+            imageLayout.flags = XR_COMPOSITION_LAYER_IMAGE_LAYOUT_VERTICAL_FLIP_BIT_FB;
+            XrCompositionLayerQuad quad{XR_TYPE_COMPOSITION_LAYER_QUAD}; quad.next = &imageLayout;
+            quad.space = local; quad.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
             quad.subImage.swapchain = swapchain; quad.subImage.imageRect.extent = {1600, 900}; quad.pose = screenPose; quad.size = {3.2f, 1.8f};
             const XrCompositionLayerBaseHeader* layers[]{reinterpret_cast<const XrCompositionLayerBaseHeader*>(&quad)};
             XrFrameEndInfo end{XR_TYPE_FRAME_END_INFO}; end.displayTime = frame.predictedDisplayTime; end.environmentBlendMode = XR_ENVIRONMENT_BLEND_MODE_OPAQUE;

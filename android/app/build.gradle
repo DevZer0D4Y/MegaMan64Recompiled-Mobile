@@ -45,7 +45,7 @@ android {
     flavorDimensions 'platform'
     productFlavors {
         standard { dimension 'platform' }
-        quest { dimension 'platform'; applicationIdSuffix '.quest'; versionCode 3; versionName '0.9.1-quest-preview.1' }
+        quest { dimension 'platform'; applicationIdSuffix '.quest'; versionCode 4; versionName '0.9.1-quest-preview.2' }
     }
     sourceSets.quest {
         manifest.srcFile '../quest/AndroidManifest.xml'

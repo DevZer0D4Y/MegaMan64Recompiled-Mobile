@@ -1,5 +1,7 @@
 # Quest VR preview
 
+Preview 2 (`0.9.1-quest-preview.2`, Android version code 4) corrects the upside-down image by flipping the OpenXR layer's image sampling vertically. It keeps the same application ID and signing identity, so it installs over preview 1 and preserves that app's ROM/config/save storage. The runtime must support `XR_FB_composition_layer_image_layout`; this extension is checked and enabled before use.
+
 This is an experimental standalone Meta Quest build with OpenXR headset tracking and Quest Touch controller input. The game is presented on a 3.2 × 1.8 metre screen, anchored three metres ahead of the viewer. Both eyes see the same game image on that screen; the compositor handles the screen's position as you move your head.
 
 **This is a virtual-screen VR mod. The game world is not rendered in stereoscopic 3D, and head motion does not steer the game's camera.** RT64 currently renders one game view. Full 3D VR requires a separate per-eye render path, camera tracking, and HUD/cutscene handling.
